@@ -21,6 +21,9 @@ import (
 	"time"
 )
 
+// Testing/Production
+const Env = "Testing"
+
 // 链接的映射池
 var clients sync.Map
 
@@ -247,23 +250,25 @@ func msgHandler(w http.ResponseWriter, r *http.Request) {
 func main()  {
 	var (
 		// 服务监听地址
-		addr = "0.0.0.0:29999"
+		addr = "127.0.0.1:29999"
 		// websocket 地址
 		wsAddr = "/ws"
 		// 消息推送地址
 		httpAddr = "/message"
 	)
 
-	log.Printf("server addr '%s' ...\n",addr)
-	log.Printf("receive api '%s' ...\n",httpAddr)
-	log.Printf("webservice api '%s' ...\n",wsAddr)
-	log.Printf("webservice debug '/debug/charts' ...\n")
-
 	http.HandleFunc(wsAddr,wsHandler)
 	http.HandleFunc(httpAddr,msgHandler)
 
+	log.Printf("["+Env+"] websocket server is running...\n")
+	log.Printf("["+Env+"] receive api 'http://" + addr + httpAddr + "' ...\n")
+	log.Printf("["+Env+"] socket  api 'http://" + addr + wsAddr + "' ...\n")
+	if Env == "Testing" {
+		log.Printf("["+Env+"] charts  api 'http://" + addr + "/debug/charts' ...\n")
+	}
+
 	err := http.ListenAndServe(addr, nil)
 	if err != nil {
-		log.Fatal("ListenAndServe", err.Error())
+		log.Printf("["+Env+"] " + err.Error() + "\n")
 	}
 }
