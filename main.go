@@ -16,6 +16,7 @@ import (
 	"log"
 	"net/http"
 	_ "net/http/pprof"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -247,6 +248,30 @@ func msgHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// 恐慌捕获
+func middlewareRecover(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if err := recover(); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				log.Println("["+Env+"] recovered from runtime error:", err)
+				debug.PrintStack()
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// 响应时间
+func middlewareTime(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t1 := time.Now()
+		next.ServeHTTP(w, r)
+		t2 := time.Now()
+		log.Printf("["+Env+"] [%s] %q %v\n", r.Method, r.URL.String(), t2.Sub(t1))
+	})
+}
+
 func main()  {
 	var (
 		// 服务监听地址
@@ -257,8 +282,8 @@ func main()  {
 		httpAddr = "/message"
 	)
 
-	http.HandleFunc(wsAddr,wsHandler)
-	http.HandleFunc(httpAddr,msgHandler)
+	http.Handle(wsAddr,middlewareRecover(http.HandlerFunc(wsHandler)))
+	http.Handle(httpAddr,middlewareRecover(middlewareTime(http.HandlerFunc(msgHandler))))
 
 	log.Printf("["+Env+"] websocket server is running...\n")
 	log.Printf("["+Env+"] receive api 'http://" + addr + httpAddr + "' ...\n")
