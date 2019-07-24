@@ -1,7 +1,9 @@
 // websocket 消息推送
+// 	配合 nginx 对 websocket 进行转发,可以实现分布式部署
+//
 // 使用方法:
-// 1.开启服务 go run main.go
-// 2.业务程序调用 http api
+// 	1.开启服务 go run main.go
+// 	2.业务程序调用 http api
 // 接口来发送数据 (curl -d '{"user_id": "10", "message": "test_user_10"}' http://localhost:29999/message)
 package main
 
@@ -10,8 +12,10 @@ import (
 	"errors"
 	"fmt"
 	"github.com/gorilla/websocket"
+	_ "github.com/mkevac/debugcharts"
 	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"strconv"
 	"sync"
 	"time"
@@ -253,6 +257,7 @@ func main()  {
 	log.Printf("server addr '%s' ...\n",addr)
 	log.Printf("receive api '%s' ...\n",httpAddr)
 	log.Printf("webservice api '%s' ...\n",wsAddr)
+	log.Printf("webservice debug '/debug/charts' ...\n")
 
 	http.HandleFunc(wsAddr,wsHandler)
 	http.HandleFunc(httpAddr,msgHandler)
