@@ -1,7 +1,7 @@
 // websocket 消息推送
 // 使用方法:
 // 1.开启服务 go run main.go
-// 2.业务程序调用 http
+// 2.业务程序调用 http api
 // 接口来发送数据 (curl -d '{"user_id": "10", "message": "test_user_10"}' http://localhost:29999/message)
 package main
 
@@ -169,6 +169,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	clients.LoadOrStore(userId, conn)
+	log.Printf("user_id %d is connecting...\n", userId)
 
 	// 心跳检测
 	go func(uid int64) {
@@ -241,8 +242,11 @@ func msgHandler(w http.ResponseWriter, r *http.Request) {
 
 func main()  {
 	var (
+		// 服务监听地址
 		addr = "0.0.0.0:29999"
+		// websocket 地址
 		wsAddr = "/ws"
+		// 消息推送地址
 		httpAddr = "/message"
 	)
 
