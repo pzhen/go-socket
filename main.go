@@ -1,161 +1,260 @@
+// websocket 消息推送
+// 使用方法:
+// 1.开启服务 go run main.go
+// 2.业务程序调用 http
+// 接口来发送数据 (curl -d '{"user_id": "10", "message": "test_user_10"}' http://localhost:29999/message)
 package main
 
 import (
 	"encoding/json"
-	"flag"
+	"errors"
 	"fmt"
-	"github.com/gorilla/mux"
-	"golang.org/x/net/websocket"
+	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
+	"strconv"
+	"sync"
 	"time"
 )
 
-type Error struct {
-	Code   string `json:"code"`
-	Reason string `json:"reason"`
-}
-
-type Client struct {
-	UserId    string
-	Timestamp int64
-	conn      *websocket.Conn
-	wsServer  *WsServer
-}
+// 链接的映射池
+var clients sync.Map
 
 type Message struct {
 	UserId  string `json:"user_id"`
 	Message string `json:"message"`
 }
 
-type WsServer struct {
-	Clients map[string][]*Client
-	AddCli  chan *Client
-	DelCli  chan *Client
-	Message chan *Message
+type MsgError struct {
+	Code   int `json:"code"`
+	Reason string `json:"reason"`
 }
 
-func NewWsServer() *WsServer {
-	return &WsServer{
-		make(map[string][]*Client),
-		make(chan *Client),
-		make(chan *Client),
-		make(chan *Message, 1000),
+// 客户端链接
+type Connection struct {
+	clientId  int64
+	wsConn    *websocket.Conn
+	inChan    chan []byte
+	outChan   chan []byte
+	closeChan chan byte
+	mutex     sync.Mutex
+	isClosed  bool
+}
+
+// 读取
+func (client *Connection) ReadMessage() (data []byte, err error) {
+	select {
+	case data = <-client.inChan:
+	case <-client.closeChan:
+		err = errors.New("connection is closed")
 	}
+	return
 }
 
-func (wsServer *WsServer) MessageHandler(w http.ResponseWriter, r *http.Request) {
-	m := &Message{}
-	err := json.NewDecoder(r.Body).Decode(m)
-	defer r.Body.Close()
-	if nil != err {
-		w.WriteHeader(400)
-		json.NewEncoder(w).Encode(&Error{"params_error", "params invalid"})
+// 发送
+func (client *Connection) WriteMessage(data []byte) (err error) {
+	select {
+	case client.outChan <- data:
+	case <-client.closeChan:
+		err = errors.New("connection is closed")
+	}
+	return
+}
+
+// 关闭
+func (client *Connection) Close() {
+	// 线程安全的Close
+	client.wsConn.Close()
+	client.mutex.Lock()
+	if !client.isClosed {
+		close(client.closeChan)
+		client.isClosed = true
+	}
+	client.mutex.Unlock()
+}
+
+// 对原始读取封装,读到数据放到inchan
+func (client *Connection) readLoop() {
+	var (
+		data []byte
+		err  error
+	)
+	for {
+		if _, data, err = client.wsConn.ReadMessage(); err != nil {
+			goto ERR
+		}
+
+		select {
+		case client.inChan <- data:
+		case <-client.closeChan:
+			goto ERR
+		}
+	}
+
+ERR:
+	client.Close()
+}
+
+func (client *Connection) writeLoop() {
+	var (
+		data []byte
+		err  error
+	)
+	for {
+		select {
+		case data = <- client.outChan:
+		case <- client.closeChan:
+			goto ERR
+		}
+
+		if err = client.wsConn.WriteMessage(websocket.TextMessage, data); err != nil {
+			goto ERR
+		}
+	}
+ERR:
+	client.Close()
+}
+
+func NewConnection(wsConn *websocket.Conn) (conn *Connection, err error)  {
+	conn = &Connection{
+		wsConn: wsConn,
+		inChan: make(chan []byte, 1000),
+		outChan: make(chan []byte, 1000),
+		closeChan: make(chan byte, 1),
+	}
+	go conn.readLoop()
+	go conn.writeLoop()
+	return
+}
+
+
+
+// 协议升级配置
+var upGrader = websocket.Upgrader{
+	ReadBufferSize: 1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
+
+// socket处理函数
+func wsHandler(w http.ResponseWriter, r *http.Request) {
+	var(
+		wsConn *websocket.Conn
+		err error
+		conn *Connection
+		userId int64
+		data []byte
+	)
+	if wsConn, err = upGrader.Upgrade(w, r, nil);err != nil {
 		return
 	}
 
-	log.Printf("message reveived, user_id: %s, message: %s", m.UserId, m.Message)
-	wsServer.Message <- &Message{m.UserId, m.Message}
-
-	w.WriteHeader(201)
-	json.NewEncoder(w).Encode(m)
-}
-
-func (c *Client) heartbeat() error {
-	millis := time.Now().UnixNano() / 1000000
-	heartbeat := struct {
-		Heartbeat int64 `json:"heartbeat"`
-	}{millis}
-	bytes, _ := json.Marshal(heartbeat)
-	_, err := c.conn.Write(bytes)
-	return err
-}
-
-func (c *Client) Listen() {
-	for range time.Tick(5 * time.Second) {
-		err := c.heartbeat()
-		if nil != err {
-			log.Printf("client heartbeat error, user_id: %v, timestamp: %d, err: %s", c.UserId, c.Timestamp, err)
-			c.wsServer.DelCli <- c
-			return
-		}
+	if conn, err = NewConnection(wsConn); err != nil {
+		goto ERR
 	}
-}
 
-func (wsServer *WsServer) WsClientHandler(conn *websocket.Conn) {
-	userId := conn.Request().URL.Query().Get("user_id")
-	defer conn.Close()
-	if len(userId) > 0 {
-		millis := time.Now().UnixNano() / 1000000
-		c := &Client{userId, millis, conn, wsServer}
-		wsServer.AddCli <- c
-		c.Listen()
+	if err = conn.WriteMessage([]byte("welcome to connection ...")); err != nil {
+		goto ERR
 	}
-}
 
-func (wsServer *WsServer) SendMessage(userId, message string) {
-	clients := wsServer.Clients[userId]
-	if len(clients) > 0 {
-		for _, c := range clients {
-			c.conn.Write([]byte(message))
-		}
-		log.Printf("message success sent to client, user_id: %s", userId)
-	} else {
-		log.Printf("client not found, user_id: %s", userId)
+	r.ParseForm()
+	if len(r.Form["user_id"]) <= 0 {
+		goto ERR
 	}
-}
 
-func (wsServer *WsServer) addClient(c *Client) {
-	clients := wsServer.Clients[c.UserId]
-	wsServer.Clients[c.UserId] = append(clients, c)
-	log.Printf("a client added, userId: %s, timestamp: %d", c.UserId, c.Timestamp)
-}
+	if userId, err = strconv.ParseInt(r.Form["user_id"][0],10,64); err != nil {
+		goto ERR
+	}
 
-func (wsServer *WsServer) delClient(c *Client) {
-	clients := wsServer.Clients[c.UserId]
-	if len(clients) > 0 {
-		for i, client := range clients {
-			if client.Timestamp == c.Timestamp {
-				wsServer.Clients[c.UserId] = append(clients[:i], clients[i+1:]...)
-				break
+	clients.LoadOrStore(userId, conn)
+
+	// 心跳检测
+	go func(uid int64) {
+		var (
+			err error
+		)
+		for {
+			if err = conn.WriteMessage([]byte("heartbeat...")); err != nil {
+				clients.Delete(uid)
+				conn.Close()
+				fmt.Printf("user_id %d is go away ...\n", uid)
+				return
 			}
+			time.Sleep(1 * time.Second)
 		}
-	}
-	if 0 == len(clients) {
-		delete(wsServer.Clients, c.UserId)
-	}
-	log.Printf("a client deleted, user_id: %s, timestamp: %d", c.UserId, c.Timestamp)
-}
 
-func (wsServer *WsServer) Start() {
+	}(userId)
+
 	for {
-		select {
-		case msg := <-wsServer.Message:
-			wsServer.SendMessage(msg.UserId, msg.Message)
-		case c := <-wsServer.AddCli:
-			wsServer.addClient(c)
-		case c := <-wsServer.DelCli:
-			wsServer.delClient(c)
+		if data, err = conn.ReadMessage(); err != nil {
+			goto ERR
 		}
+
+		if err = conn.WriteMessage(data); err != nil {
+			goto ERR
+		}
+	}
+
+	ERR:
+		conn.Close()
+
+}
+
+// 发送消息接口
+func msgHandler(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	var(
+		conn *Connection
+		err error
+		msg *Message
+		userId int64
+		value interface{}
+		ok bool
+	)
+
+	msg = &Message{}
+	if err := json.NewDecoder(r.Body).Decode(msg);err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(&MsgError{0, "message invalid"})
+		fmt.Println("message is invalid...")
+		return
+	}
+
+	if userId, err = strconv.ParseInt(msg.UserId,10,64); err != nil || userId <= 0 {
+		fmt.Println("user_id is invalid...")
+		return
+	}
+
+	if value, ok = clients.Load(userId); ok == false {
+		fmt.Println("connection queue not having user_id " + strconv.FormatInt(userId,10))
+		return
+	}
+
+	conn = value.(*Connection)
+	if err = conn.WriteMessage([]byte(msg.Message));err != nil {
+		fmt.Println("send message '"+msg.Message+"' fail...")
+		return
 	}
 }
 
-var port = flag.Int("serverPort", 29999, "server port")
+func main()  {
+	var (
+		addr = "0.0.0.0:29999"
+		wsAddr = "/ws"
+		httpAddr = "/message"
+	)
 
-func main() {
-	flag.Parse()
-	wsServer := NewWsServer()
+	log.Printf("server addr '%s' ...\n",addr)
+	log.Printf("receive api '%s' ...\n",httpAddr)
+	log.Printf("webservice api '%s' ...\n",wsAddr)
 
-	go wsServer.Start()
-	log.Printf("wsServer running...")
-	log.Printf("wsServer server port %d", *port)
+	http.HandleFunc(wsAddr,wsHandler)
+	http.HandleFunc(httpAddr,msgHandler)
 
-	r := mux.NewRouter()
-	r.Handle("/ws", websocket.Handler(wsServer.WsClientHandler))
-	r.HandleFunc("/message", wsServer.MessageHandler).Methods(http.MethodPost)
-	r.Headers("Content-Type", "application/json; charset=UTF-8")
-
-	log.Printf("httpServer running...")
-	log.Printf("httpServer receive api '/message' ")
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *port), r))
+	err := http.ListenAndServe(addr, nil)
+	if err != nil {
+		log.Fatal("ListenAndServe", err.Error())
+	}
 }
