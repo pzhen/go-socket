@@ -3,6 +3,7 @@ package wsconn
 import (
 	"errors"
 	"github.com/gorilla/websocket"
+	"log"
 	"sync"
 )
 
@@ -52,6 +53,7 @@ func (conn *Connection) readLoop() {
 	)
 	for {
 		if _, data, err = conn.wsConn.ReadMessage(); err != nil {
+			log.Printf("[Error] readLoop %s \n", err)
 			goto ERR
 		}
 
@@ -79,6 +81,7 @@ func (conn *Connection) writeLoop() {
 		}
 
 		if err = conn.wsConn.WriteMessage(websocket.TextMessage, data); err != nil {
+			log.Printf("[Error] writeLoop %s \n", err)
 			goto ERR
 		}
 	}
