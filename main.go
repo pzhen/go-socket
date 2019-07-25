@@ -9,21 +9,22 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
 	"github.com/gorilla/websocket"
 	_ "github.com/mkevac/debugcharts"
+	"go-socket/hook"
+	"go-socket/wsconn"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
-	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
 )
 
-// Testing/Production
-const Env = "Testing"
+// dev/prod
+const (
+	Env = "Test"
+)
 
 // 链接的映射池
 var clients sync.Map
@@ -34,112 +35,13 @@ type Message struct {
 }
 
 type MsgError struct {
-	Code   int `json:"code"`
+	Code   int    `json:"code"`
 	Reason string `json:"reason"`
 }
 
-// 客户端链接
-type Connection struct {
-	clientId  int64
-	wsConn    *websocket.Conn
-	inChan    chan []byte
-	outChan   chan []byte
-	closeChan chan byte
-	mutex     sync.Mutex
-	isClosed  bool
-}
-
-// 读取
-func (client *Connection) ReadMessage() (data []byte, err error) {
-	select {
-	case data = <-client.inChan:
-	case <-client.closeChan:
-		err = errors.New("connection is closed")
-	}
-	return
-}
-
-// 发送
-func (client *Connection) WriteMessage(data []byte) (err error) {
-	select {
-	case client.outChan <- data:
-	case <-client.closeChan:
-		err = errors.New("connection is closed")
-	}
-	return
-}
-
-// 关闭
-func (client *Connection) Close() {
-	// 线程安全的Close
-	client.wsConn.Close()
-	client.mutex.Lock()
-	if !client.isClosed {
-		close(client.closeChan)
-		client.isClosed = true
-	}
-	client.mutex.Unlock()
-}
-
-// 对原始读取封装,读到数据放到inchan
-func (client *Connection) readLoop() {
-	var (
-		data []byte
-		err  error
-	)
-	for {
-		if _, data, err = client.wsConn.ReadMessage(); err != nil {
-			goto ERR
-		}
-
-		select {
-		case client.inChan <- data:
-		case <-client.closeChan:
-			goto ERR
-		}
-	}
-
-ERR:
-	client.Close()
-}
-
-func (client *Connection) writeLoop() {
-	var (
-		data []byte
-		err  error
-	)
-	for {
-		select {
-		case data = <- client.outChan:
-		case <- client.closeChan:
-			goto ERR
-		}
-
-		if err = client.wsConn.WriteMessage(websocket.TextMessage, data); err != nil {
-			goto ERR
-		}
-	}
-ERR:
-	client.Close()
-}
-
-func NewConnection(wsConn *websocket.Conn) (conn *Connection, err error)  {
-	conn = &Connection{
-		wsConn: wsConn,
-		inChan: make(chan []byte, 1000),
-		outChan: make(chan []byte, 1000),
-		closeChan: make(chan byte, 1),
-	}
-	go conn.readLoop()
-	go conn.writeLoop()
-	return
-}
-
-
-
 // 协议升级配置
 var upGrader = websocket.Upgrader{
-	ReadBufferSize: 1024,
+	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
 		return true
@@ -148,36 +50,41 @@ var upGrader = websocket.Upgrader{
 
 // socket处理函数
 func wsHandler(w http.ResponseWriter, r *http.Request) {
-	var(
+	var (
 		wsConn *websocket.Conn
-		err error
-		conn *Connection
+		err    error
+		conn   *wsconn.Connection
 		userId int64
-		data []byte
+		data   []byte
 	)
-	if wsConn, err = upGrader.Upgrade(w, r, nil);err != nil {
+	if wsConn, err = upGrader.Upgrade(w, r, nil); err != nil {
+		log.Printf("[Error] %s \n", err.Error())
 		return
 	}
 
-	if conn, err = NewConnection(wsConn); err != nil {
+	if conn, err = wsconn.NewConnection(wsConn); err != nil {
+		log.Printf("[Error] %s \n", err.Error())
 		goto ERR
 	}
 
 	if err = conn.WriteMessage([]byte("welcome to connection ...")); err != nil {
+		log.Printf("[Error] %s \n", err.Error())
 		goto ERR
 	}
 
 	r.ParseForm()
 	if len(r.Form["user_id"]) <= 0 {
+		log.Println("[Error] user_id invalid ")
 		goto ERR
 	}
 
-	if userId, err = strconv.ParseInt(r.Form["user_id"][0],10,64); err != nil {
+	if userId, err = strconv.ParseInt(r.Form["user_id"][0], 10, 64); err != nil {
+		log.Printf("[Error] %s \n", err.Error())
 		goto ERR
 	}
 
 	clients.LoadOrStore(userId, conn)
-	log.Printf("user_id %d is connecting...\n", userId)
+	log.Printf("[Info] user_id %d is connecting...\n", userId)
 
 	// 心跳检测
 	go func(uid int64) {
@@ -188,91 +95,76 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 			if err = conn.WriteMessage([]byte("heartbeat...")); err != nil {
 				clients.Delete(uid)
 				conn.Close()
-				fmt.Printf("user_id %d is go away ...\n", uid)
+				log.Printf("[Info] user_id %d fall away...\n", uid)
 				return
 			}
-			time.Sleep(1 * time.Second)
+			time.Sleep(60 * time.Second)
 		}
 
 	}(userId)
 
 	for {
 		if data, err = conn.ReadMessage(); err != nil {
+			log.Printf("[Error] %s \n", err.Error())
 			goto ERR
 		}
 
 		if err = conn.WriteMessage(data); err != nil {
+			log.Printf("[Error] %s \n", err.Error())
 			goto ERR
 		}
 	}
 
-	ERR:
-		conn.Close()
+ERR:
+	conn.Close()
 
 }
 
 // 发送消息接口
 func msgHandler(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
-	var(
-		conn *Connection
-		err error
-		msg *Message
+	var (
+		conn   *wsconn.Connection
+		err    error
+		msg    *Message
 		userId int64
-		value interface{}
-		ok bool
+		value  interface{}
+		ok     bool
 	)
 
 	msg = &Message{}
-	if err := json.NewDecoder(r.Body).Decode(msg);err != nil {
+	if err := json.NewDecoder(r.Body).Decode(msg); err != nil {
 		w.WriteHeader(400)
 		json.NewEncoder(w).Encode(&MsgError{0, "message invalid"})
-		fmt.Println("message is invalid...")
+		log.Println("[Error] message invalid")
 		return
 	}
 
-	if userId, err = strconv.ParseInt(msg.UserId,10,64); err != nil || userId <= 0 {
-		fmt.Println("user_id is invalid...")
+	if userId, err = strconv.ParseInt(msg.UserId, 10, 64); err != nil || userId <= 0 {
+		log.Println("[Error] message of user_id invalid")
 		return
 	}
 
 	if value, ok = clients.Load(userId); ok == false {
-		fmt.Println("connection queue not having user_id " + strconv.FormatInt(userId,10))
+		log.Printf("[Error] user_id %s may be fall away \n", strconv.FormatInt(userId, 10))
 		return
 	}
 
-	conn = value.(*Connection)
-	if err = conn.WriteMessage([]byte(msg.Message));err != nil {
-		fmt.Println("send message '"+msg.Message+"' fail...")
+	conn = value.(*wsconn.Connection)
+	if err = conn.WriteMessage([]byte(msg.Message)); err != nil {
+		log.Printf("[Error] send message '%s' fail \n", msg.Message)
 		return
 	}
+
+	log.Printf("[Info] send message '%s' ok \n", msg.Message)
 }
 
-// 恐慌捕获
-func middlewareRecover(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if err := recover(); err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				log.Println("["+Env+"] recovered from runtime error:", err)
-				debug.PrintStack()
-			}
-		}()
-		next.ServeHTTP(w, r)
-	})
+func init() {
+	log.SetPrefix(Env + " - ")
+	log.SetFlags(log.Ldate | log.Ltime | log.Llongfile)
 }
 
-// 响应时间
-func middlewareTime(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t1 := time.Now()
-		next.ServeHTTP(w, r)
-		t2 := time.Now()
-		log.Printf("["+Env+"] [%s] %q %v\n", r.Method, r.URL.String(), t2.Sub(t1))
-	})
-}
-
-func main()  {
+func main() {
 	var (
 		// 服务监听地址
 		addr = "127.0.0.1:29999"
@@ -282,18 +174,12 @@ func main()  {
 		httpAddr = "/message"
 	)
 
-	http.Handle(wsAddr,middlewareRecover(http.HandlerFunc(wsHandler)))
-	http.Handle(httpAddr,middlewareRecover(middlewareTime(http.HandlerFunc(msgHandler))))
+	http.HandleFunc(wsAddr, hook.HookRecover(wsHandler))
+	http.HandleFunc(httpAddr, hook.HookRecover(hook.HookTime(msgHandler)))
 
-	log.Printf("["+Env+"] websocket server is running...\n")
-	log.Printf("["+Env+"] receive api 'http://" + addr + httpAddr + "' ...\n")
-	log.Printf("["+Env+"] socket  api 'http://" + addr + wsAddr + "' ...\n")
-	if Env == "Testing" {
-		log.Printf("["+Env+"] charts  api 'http://" + addr + "/debug/charts' ...\n")
-	}
+	log.Println("[Info] websocket server is running...")
 
-	err := http.ListenAndServe(addr, nil)
-	if err != nil {
-		log.Printf("["+Env+"] " + err.Error() + "\n")
+	if err := http.ListenAndServe(addr, nil); err != nil {
+		log.Fatalf("[Error] %s", err.Error())
 	}
 }
