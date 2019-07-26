@@ -125,7 +125,11 @@ func msgHandler(w http.ResponseWriter, r *http.Request) {
 
 func init() {
 	log.SetPrefix(config.Env + " - ")
-	log.SetFlags(log.Ldate | log.Ltime | log.Llongfile)
+	if config.Env == "Prod" {
+		log.SetFlags(log.Ldate | log.Ltime)
+	} else {
+		log.SetFlags(log.Ldate | log.Ltime | log.Llongfile)
+	}
 }
 
 func main() {
