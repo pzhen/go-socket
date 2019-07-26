@@ -2,6 +2,7 @@ package bucket
 
 import (
 	"go-socket/wsconn"
+	"log"
 	"sync"
 )
 
@@ -40,5 +41,6 @@ func (bucket *Bucket) PushMessage(pushMsg *PushMsg) {
 	// 全量非阻塞推送
 	for _, wsConn := range bucket.connMap {
 		wsConn.WriteMessage([]byte(pushMsg.Msg))
+		log.Printf("[Info] Send bucket_id %d user_id %d message %s \n", bucket.bucketId, wsConn.Uid,pushMsg.Msg)
 	}
 }

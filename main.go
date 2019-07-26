@@ -119,7 +119,6 @@ func msgHandler(w http.ResponseWriter, r *http.Request) {
 
 	for _, v := range pushMsgs {
 		bucket.GlobalBucketSet.BuffChan <- v
-		log.Printf("[Info] send message '%s' ok \n", v.Msg)
 	}
 
 }
