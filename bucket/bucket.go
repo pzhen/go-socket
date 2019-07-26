@@ -34,13 +34,22 @@ func (bucket *Bucket) DelBucket(connection *wsconn.Connection) {
 }
 
 func (bucket *Bucket) PushMessage(pushMsg *PushMsg) {
+	var (
+		err error
+	)
 	// 锁Bucket
 	bucket.rwMutex.RLock()
 	defer bucket.rwMutex.RUnlock()
 
 	// 全量非阻塞推送
 	for _, wsConn := range bucket.connMap {
-		wsConn.WriteMessage([]byte(pushMsg.Msg))
-		log.Printf("[Info] Send bucket_id %d user_id %d message %s \n", bucket.bucketId, wsConn.Uid,pushMsg.Msg)
+		if err = wsConn.WriteMessage([]byte(pushMsg.Msg)); err != nil {
+			MessageSendFailTotal_INCR()
+			log.Printf("[Warning] Send bucket_id %d user_id %d message %s fail \n",
+				bucket.bucketId, wsConn.Uid, pushMsg.Msg)
+			continue
+		}
+		log.Printf("[Info] Send bucket_id %d user_id %d message %s \n",
+			bucket.bucketId, wsConn.Uid, pushMsg.Msg)
 	}
 }

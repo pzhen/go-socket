@@ -67,6 +67,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	// 装桶
 	conn.Uid = userId
 	bucket.GlobalBucketSet.AddBucketSet(conn)
+	bucket.ConnectionTotal_INCR()
 
 	log.Printf("[Info] user_id %d is connecting...\n", userId)
 
@@ -77,14 +78,15 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		)
 		for {
 			if err = conn.WriteMessage([]byte("heartbeat...")); err != nil {
-				bucket.GlobalBucketSet.DelBucketSet(conn)
 				conn.Close()
-				log.Printf("[Info] user_id %d fall away...\n", conn.Uid)
+				bucket.ConnectionTotal_DESC()
+				bucket.GlobalBucketSet.DelBucketSet(conn)
+				log.Printf("[Info] user_id %d going away...\n", conn.Uid)
 				return
 			}
-			time.Sleep(60 * time.Second)
+			//阻塞不消耗系统资源,一般为60s
+			time.Sleep(config.HeartbeatTime * time.Second)
 		}
-
 	}(conn)
 
 	for {
@@ -119,8 +121,16 @@ func msgHandler(w http.ResponseWriter, r *http.Request) {
 
 	for _, v := range pushMsgs {
 		bucket.GlobalBucketSet.BuffChan <- v
+		bucket.MessageBufferTotal_INCR()
 	}
+}
 
+func statsHandler(w http.ResponseWriter, r *http.Request) {
+	//未采用模板,浏览器会在一行显示
+	//请用curl来查看 `curl http://localhost:29999`
+	w.Write([]byte("connection_total : " + strconv.FormatInt(bucket.GlobalStats.ConnectionTotal, 10) + "\n"))
+	w.Write([]byte("message_buffer_total : " + strconv.FormatInt(bucket.GlobalStats.MessageBufferTotal, 10) + "\n"))
+	w.Write([]byte("message_send_fail_total : " + strconv.FormatInt(bucket.GlobalStats.MessageSendFailTotal, 10) + "\n"))
 }
 
 func init() {
@@ -141,7 +151,11 @@ func main() {
 		// 消息推送地址
 		httpAddr = "/message"
 	)
+
+	bucket.InitStats()
 	bucket.InitBucketSet()
+
+	http.HandleFunc("/", hook.HookRecover(statsHandler))
 	http.HandleFunc(wsAddr, hook.HookRecover(wsHandler))
 	http.HandleFunc(httpAddr, hook.HookRecover(hook.HookTime(msgHandler)))
 

@@ -22,7 +22,7 @@ func (conn *Connection) ReadMessage() (data []byte, err error) {
 	select {
 	case data = <-conn.inChan:
 	case <-conn.closeChan:
-		err = errors.New("user "+strconv.Itoa(int(conn.Uid))+" connection is closed")
+		err = errors.New("user " + strconv.Itoa(int(conn.Uid)) + " connection is closed")
 	}
 	return
 }
@@ -31,7 +31,7 @@ func (conn *Connection) WriteMessage(data []byte) (err error) {
 	select {
 	case conn.outChan <- data:
 	case <-conn.closeChan:
-		err = errors.New("user "+strconv.Itoa(int(conn.Uid))+" connection is closed")
+		err = errors.New("user " + strconv.Itoa(int(conn.Uid)) + " connection is closed")
 	}
 	return
 }

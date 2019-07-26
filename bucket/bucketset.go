@@ -64,6 +64,7 @@ func (bucketSet *BucketSet) BuffWorker(workerId int) {
 	for {
 		select {
 		case pushJob := <-bucketSet.BuffChan:
+			MessageBufferTotal_DESC()
 			// 为每个桶都生成一份消息
 			for bucketId = range bucketSet.buckets {
 				bucketSet.jobChan[bucketId] <- pushJob
