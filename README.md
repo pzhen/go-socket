@@ -9,7 +9,8 @@ golang 实现的横向可扩展消息推送程序
 3.结合 Nginx 转发,可实现分布式部署
 
 
-![struct](https://github.com/pzhen/go-socket/struct.jpg?raw=true)
+![struct](https://github.com/pzhen/go-socket/blob/master/struct.jpg)
+          
 
 # 运行
 
