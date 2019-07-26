@@ -8,7 +8,8 @@ golang 实现的横向可扩展消息推送程序
 2.客户端接入更简单,无需告知服务器是否中断通信,服务器为每个client发送心跳检测,自动识别.
 3.结合 Nginx 转发,可实现分布式部署
 
-[](./struct.jpg)
+
+![struct](https://github.com/pzhen/go-socket/struct.jpg?raw=true)
 
 # 运行
 
