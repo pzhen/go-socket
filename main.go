@@ -12,21 +12,8 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"strconv"
-	"sync"
 	"time"
 )
-
-// 链接的映射池
-var clients sync.Map
-
-var MessageS []struct {
-	Msg string `json:"msg"`
-}
-
-type Message struct {
-	UserId  string `json:"user_id"`
-	Message string `json:"message"`
-}
 
 type MsgError struct {
 	Code   int    `json:"code"`
