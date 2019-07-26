@@ -4,11 +4,12 @@ import (
 	"errors"
 	"github.com/gorilla/websocket"
 	"log"
+	"strconv"
 	"sync"
 )
 
 type Connection struct {
-	clientId  int64
+	Uid       int64
 	wsConn    *websocket.Conn
 	inChan    chan []byte
 	outChan   chan []byte
@@ -21,7 +22,7 @@ func (conn *Connection) ReadMessage() (data []byte, err error) {
 	select {
 	case data = <-conn.inChan:
 	case <-conn.closeChan:
-		err = errors.New("connection is closed")
+		err = errors.New("user "+strconv.Itoa(int(conn.Uid))+" connection is closed")
 	}
 	return
 }
@@ -30,7 +31,7 @@ func (conn *Connection) WriteMessage(data []byte) (err error) {
 	select {
 	case conn.outChan <- data:
 	case <-conn.closeChan:
-		err = errors.New("connection is closed")
+		err = errors.New("user "+strconv.Itoa(int(conn.Uid))+" connection is closed")
 	}
 	return
 }
@@ -53,7 +54,7 @@ func (conn *Connection) readLoop() {
 	)
 	for {
 		if _, data, err = conn.wsConn.ReadMessage(); err != nil {
-			log.Printf("[Error] readLoop %s \n", err)
+			log.Printf("[Error] readLoop user_id %d %s \n", conn.Uid, err)
 			goto ERR
 		}
 
@@ -81,7 +82,7 @@ func (conn *Connection) writeLoop() {
 		}
 
 		if err = conn.wsConn.WriteMessage(websocket.TextMessage, data); err != nil {
-			log.Printf("[Error] writeLoop %s \n", err)
+			log.Printf("[Error] writeLoop user_id %d %s \n", conn.Uid, err)
 			goto ERR
 		}
 	}

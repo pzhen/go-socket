@@ -1,16 +1,11 @@
-// websocket 消息推送
-// 	配合 nginx 对 websocket 进行转发,可以实现分布式部署
-//
-// 使用方法:
-// 	1.开启服务 go run main.go
-// 	2.业务程序调用 http api
-// 接口来发送数据 (curl -d '{"user_id": "10", "message": "test_user_10"}' http://localhost:29999/message)
 package main
 
 import (
 	"encoding/json"
 	"github.com/gorilla/websocket"
 	_ "github.com/mkevac/debugcharts"
+	"go-socket/bucket"
+	"go-socket/config"
 	"go-socket/hook"
 	"go-socket/wsconn"
 	"log"
@@ -21,13 +16,12 @@ import (
 	"time"
 )
 
-// dev/prod
-const (
-	Env = "Test"
-)
-
 // 链接的映射池
 var clients sync.Map
+
+var MessageS []struct {
+	Msg string `json:"msg"`
+}
 
 type Message struct {
 	UserId  string `json:"user_id"`
@@ -83,25 +77,28 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		goto ERR
 	}
 
-	clients.LoadOrStore(userId, conn)
+	// 装桶
+	conn.Uid = userId
+	bucket.GlobalBucketSet.AddBucketSet(conn)
+
 	log.Printf("[Info] user_id %d is connecting...\n", userId)
 
 	// 心跳检测
-	go func(uid int64) {
+	go func(conn *wsconn.Connection) {
 		var (
 			err error
 		)
 		for {
 			if err = conn.WriteMessage([]byte("heartbeat...")); err != nil {
-				clients.Delete(uid)
+				bucket.GlobalBucketSet.DelBucketSet(conn)
 				conn.Close()
-				log.Printf("[Info] user_id %d fall away...\n", uid)
+				log.Printf("[Info] user_id %d fall away...\n", conn.Uid)
 				return
 			}
 			time.Sleep(60 * time.Second)
 		}
 
-	}(userId)
+	}(conn)
 
 	for {
 		if data, err = conn.ReadMessage(); err != nil {
@@ -123,44 +120,25 @@ ERR:
 // 发送消息接口
 func msgHandler(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
-	var (
-		conn   *wsconn.Connection
-		err    error
-		msg    *Message
-		userId int64
-		value  interface{}
-		ok     bool
-	)
+	var pushMsgs []*bucket.PushMsg
+	pushMsgs = make([]*bucket.PushMsg, 0)
 
-	msg = &Message{}
-	if err := json.NewDecoder(r.Body).Decode(msg); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&pushMsgs); err != nil {
 		w.WriteHeader(400)
 		json.NewEncoder(w).Encode(&MsgError{0, "message invalid"})
-		log.Println("[Error] message invalid")
+		log.Println("[Error] message invalid", err)
 		return
 	}
 
-	if userId, err = strconv.ParseInt(msg.UserId, 10, 64); err != nil || userId <= 0 {
-		log.Println("[Error] message of user_id invalid")
-		return
+	for _, v := range pushMsgs {
+		bucket.GlobalBucketSet.BuffChan <- v
+		log.Printf("[Info] send message '%s' ok \n", v.Msg)
 	}
 
-	if value, ok = clients.Load(userId); ok == false {
-		log.Printf("[Error] user_id %s may be fall away \n", strconv.FormatInt(userId, 10))
-		return
-	}
-
-	conn = value.(*wsconn.Connection)
-	if err = conn.WriteMessage([]byte(msg.Message)); err != nil {
-		log.Printf("[Error] send message '%s' fail \n", msg.Message)
-		return
-	}
-
-	log.Printf("[Info] send message '%s' ok \n", msg.Message)
 }
 
 func init() {
-	log.SetPrefix(Env + " - ")
+	log.SetPrefix(config.Env + " - ")
 	log.SetFlags(log.Ldate | log.Ltime | log.Llongfile)
 }
 
@@ -173,7 +151,7 @@ func main() {
 		// 消息推送地址
 		httpAddr = "/message"
 	)
-
+	bucket.InitBucketSet()
 	http.HandleFunc(wsAddr, hook.HookRecover(wsHandler))
 	http.HandleFunc(httpAddr, hook.HookRecover(hook.HookTime(msgHandler)))
 
